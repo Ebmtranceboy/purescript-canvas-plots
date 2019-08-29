@@ -17,9 +17,13 @@ import Web.HTML.HTMLInputElement (fromElement, value) as HTMLInput
 import Data.Maybe (fromJust)
 import Partial.Unsafe (unsafePartial)
 import Effect(Effect)
-import Graphics.Canvas(Context2D)
+import Graphics.Canvas(Context2D, ImageData)
 
 foreign import getContext2D :: DOM.Node -> Effect Context2D
+foreign import getImageData :: 
+    Context2D -> Number -> Number -> Number -> Number -> Effect ImageData
+foreign import putImageData :: 
+    Context2D -> ImageData -> Number -> Number -> Effect Unit
 
 type Document = DOM.Document
 
