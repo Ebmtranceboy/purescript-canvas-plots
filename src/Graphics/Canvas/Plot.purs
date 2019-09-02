@@ -2,8 +2,8 @@ module Main where
 
 import Prelude
 import Effect (Effect)
-import Data.Maybe(Maybe(..), maybe)
-import Data.Array(filter, length, (..))
+import Data.Maybe(Maybe(..), maybe, fromJust)
+import Data.Array(filter, length, (..), catMaybes, uncons, dropWhile, head, tail)
 import Data.Foldable (foldr)
 import Control.Alt(alt)
 import Color (rgb)
@@ -20,11 +20,56 @@ import FRP.Event.Time(interval)
 import FRP.Event.Mouse (getMouse, withPosition, withButtons)
 import Data.Set(isEmpty)
 import Partial.Unsafe(unsafePartial)
+import Partial
 import Data.Int(toNumber, floor, ceil)
 
 width = 800.0 :: Number
 height = 600.0 :: Number
 
+type Domain = Number -> Boolean
+type Function = {domain :: Domain, expression :: Number -> Number}
+
+square :: Function
+square = {domain: const true, expression: \x -> x*x}
+
+inverse :: Function
+inverse = {domain: \x -> x /= 0.0, expression: \x -> 1.0 / x}
+
+pen :: Partial => Box -> Array Segment -> Maybe {x :: Number, y :: Number} -> Array (Maybe {x :: Number, y :: Number}) -> Array Segment
+pen from acc _        [] = acc
+pen from acc (Just p) xs =
+ let okY y = botY <= y && y <= topY
+     botY = ord from.center - from.halfHeight
+     topY = ord from.center + from.halfHeight
+  in case uncons xs of
+      Just {head: hd, tail: tl} -> 
+          case hd of
+              Just {x, y} -> pen from (
+                               if okY p.y && okY y 
+                                then acc <> [segment (point "" p.x p.y) 
+                                                     (point "" x y) Nothing]
+                                else acc) hd tl
+              Nothing     -> let ys :: Array (Maybe {x :: Number, y :: Number})
+                                 ys = dropWhile (_ == Nothing) tl
+                               in if length ys == 0 
+                                    then acc 
+                                    else pen from acc (unsafePartial fromJust $ head ys) 
+                                                      (unsafePartial fromJust $ tail ys)
+      Nothing -> acc
+
+plot :: (Final -> Drawing) -> Box -> Box -> Function -> Drawing
+plot draw from to {domain, expression} = 
+        let botX = abs from.center - from.halfWidth
+            topX = abs from.center + from.halfWidth
+            zs = dropWhile (_ == Nothing) $ 
+              (\x -> if domain x then Just {x, y: expression x} else Nothing) <$> 
+                 (\n -> botX + toNumber n * (topX - botX) / 100.0) <$> 0..100
+        in if length zs == 0 
+                   then mempty 
+                   else foldr (\s acc -> acc <> (draw $ FS from to s) ) mempty $ 
+                           unsafePartial pen from [] (unsafePartial fromJust $ head zs) 
+                                                     (unsafePartial fromJust $ tail zs)
+                           
 type Box = {center :: Point, halfWidth :: Number, halfHeight :: Number}
 
 remap :: Box -> Point -> Box -> Point
@@ -105,36 +150,42 @@ instance drawableFinal :: DrawableSet Final where
                          , asOriented}
   drawIn ctx (FA arr) = drawIn ctx arr
 
-type State = { drawing :: Box -> Box -> Drawing
+type State = { functionPlot :: Box -> Box -> Drawing
              , from :: Box
              , to :: Box
              , previousX :: Number
              , previousY :: Number}
 
+grid :: Box -> Box -> Drawing
+grid from to = 
+  let topX = abs from.center + from.halfWidth
+      botX = abs from.center - from.halfWidth
+      topY = ord from.center + from.halfHeight
+      botY = ord from.center - from.halfHeight
+      segAtX x = FS from to $ segment (point "" x botY) (point "" x topY) Nothing
+      segAtY y = FS from to $ segment (point "" botX y) (point "" topX y) Nothing
+   in  ( foldr (<>) mempty $ 
+         (\ n -> drawIn {color: rgb 50 50 50, lineWidth: 0.5} $
+           segAtX $ toNumber n) <$> ceil botX .. floor topX)
+           <>
+      ( foldr (<>) mempty $ 
+         (\ n -> drawIn {color: rgb 50 50 50, lineWidth: 0.5} $
+           segAtY $ toNumber n) <$> ceil botY .. floor topY)
+                 <> (drawIn {color: rgb 50 50 50, lineWidth: 1.5} $ segAtX 0.0)
+                 <> (drawIn {color: rgb 50 50 50, lineWidth: 1.5} $ segAtY 0.0)
+
 initialState :: (Final -> Drawing) -> State
 initialState draw = 
-  { drawing: \from to -> 
-              ( foldr (<>) mempty $ 
-                 (\ n -> drawIn {color: rgb 50 50 50, lineWidth: 0.5} $
-                   FS from to $ segment (point "" (toNumber n) (ord from.center -
-                     from.halfHeight)) (point "" (toNumber n) (ord from.center +
-                       from.halfHeight)) Nothing) <$> (ceil $ abs from.center -
-                         from.halfWidth)..(floor $ abs from.center + from.halfWidth))
-                   <>
-              ( foldr (<>) mempty $ 
-                 (\ n -> drawIn {color: rgb 50 50 50, lineWidth: 0.5} $
-                   FS from to $ segment (point "" (abs from.center -
-                     from.halfWidth) (toNumber n)) (point "" (abs from.center +
-                       from.halfWidth) (toNumber n)) Nothing) <$> (ceil $ ord from.center -
-                         from.halfHeight)..(floor $ ord from.center + from.halfHeight))
+  { functionPlot: \from to -> grid from to <> plot draw from to inverse 
+
   , from:  local
   , to: functionDisplay
   , previousX: 0.0
   , previousY: 0.0}
 
 reframe :: State -> Drawing
-reframe {drawing, from, to, previousX, previousY} =
-  drawing from to
+reframe {functionPlot, from, to, previousX, previousY} =
+  functionPlot from to
 
 ePage :: ButtonEvent -> (Final -> Drawing) -> Effect (Behavior Drawing) 
 ePage ev draw = liftA1 reframe  <$> 
